@@ -4952,8 +4952,22 @@ class TelegramAdapter(BasePlatformAdapter):
         text = re.sub(r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE)
         # 5) Bold **text** → *text*; 6) Italic *text* → _text_ ([^*\n]+ keeps matches on one line, or *
         # bullet lists corrupt); 7) Strikethrough ~~text~~ → ~text~; 8) Spoiler ||text|| kept as-is.
-        text = re.sub(r'\*\*(.+?)\*\*', _ph_wrap('*', '*'), text)
-        text = re.sub(r'\*([^*\n]+)\*', _ph_wrap('_', '_'), text)
+        # 5) Bold **text** → *text*; 6) Italic *text* → _text_. Asterisk emphasis is resolved
+        # together so nested/combined bold+italic and multiline bold survive instead of the bold
+        # pass eating the inner markers first: ***x*** → bold+italic _*x*_, **a *b* c** → bold with
+        # the inner italic resolved, **a\nb** → multiline bold. Unmatched markers stay literal
+        # (escaped at step 10). The bare-italic pass stays single-line ([^*\n]+) so `* bullet`
+        # list items never pair across lines (#47653-class regression). 7) Strikethrough; 8) Spoiler.
+        def _asterisk_bold_italic(m):
+            return _ph(f"_*{_escape_mdv2(m.group(1))}*_")
+        text = re.sub(r'\*\*\*(.+?)\*\*\*', _asterisk_bold_italic, text, flags=re.DOTALL)
+        def _asterisk_bold(m):
+            # Resolve a single-line italic inside the bold span so **bold *x* more** keeps its
+            # inner emphasis; the content otherwise survives as a placeholder-protected blob.
+            inner = re.sub(r'\*([^*\n]+)\*', lambda im: _ph(f"_{_escape_mdv2(im.group(1))}_"), m.group(1))
+            return _ph(f"*{_escape_mdv2(inner)}*")
+        text = re.sub(r'\*\*(.+?)\*\*', _asterisk_bold, text, flags=re.DOTALL)
+        text = re.sub(r'\*([^*\n]+)\*', lambda m: _ph(f"_{_escape_mdv2(m.group(1))}_"), text)
         text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
         text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
         # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).

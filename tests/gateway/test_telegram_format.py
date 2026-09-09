@@ -167,6 +167,50 @@ class TestFormatMessageBoldItalic:
 
 
 # =========================================================================
+# format_message - nested/combined emphasis + multiline bold (#106891)
+# =========================================================================
+
+
+class TestFormatMessageNestedEmphasis:
+    r"""The legacy MarkdownV2 converter corrupted valid asterisk emphasis when bold
+    and italic were nested/combined, and left multiline bold literal: the bold
+    pass ate the inner markers first and did not span newlines. Asterisk
+    delimiters are now resolved together (#106891)."""
+
+    def test_bold_italic_combined(self, adapter):
+        result = adapter.format_message("***bold italic***")
+        assert result == "_*bold italic*_"
+
+    def test_bold_with_inner_italic(self, adapter):
+        result = adapter.format_message("**bold *italic* text**")
+        assert result == "*bold _italic_ text*"
+
+    def test_multiline_bold(self, adapter):
+        result = adapter.format_message("**bold\ntext**")
+        assert result == "*bold\ntext*"
+
+    def test_multiline_bold_italic(self, adapter):
+        result = adapter.format_message("***bold\nitalic***")
+        assert result == "_*bold\nitalic*_"
+
+    def test_plain_bold_unchanged(self, adapter):
+        result = adapter.format_message("This is **bold** text")
+        assert "*bold*" in result
+        assert "**" not in result
+
+    def test_plain_italic_unchanged(self, adapter):
+        result = adapter.format_message("This is *italic* text")
+        assert "_italic_" in result
+
+    def test_unmatched_markers_preserved(self, adapter):
+        # A lone ** with no closing pair is not a bold span: the markers stay
+        # literal (escaped) rather than being stripped or balanced.
+        result = adapter.format_message("not ** bold here")
+        assert "**" not in result
+        assert "\\*\\*" in result
+
+
+# =========================================================================
 # format_message - headers
 # =========================================================================
 
