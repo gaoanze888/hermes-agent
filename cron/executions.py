@@ -266,10 +266,11 @@ def recover_interrupted_executions() -> int:
     now = _hermes_now().isoformat()
     changed = 0
     recovered: List[Dict[str, Any]] = []
+    requeue_job_ids: List[str] = []
     with _transaction() as conn:
         rows = conn.execute(
             """SELECT id, status, process_id, pid, process_started_at,
-                      handoff_pending, handoff_started_at
+                      job_id, handoff_pending, handoff_started_at
                FROM executions
                WHERE status IN ('claimed','running')"""
         ).fetchall()
@@ -304,10 +305,29 @@ def recover_interrupted_executions() -> int:
                 record = _fetch(conn, row["id"])
                 if record is not None:
                     recovered.append(record)
+                # An unadopted handoff (#106607): the occurrence was dispatched
+                # (claim_job_for_fire stamped fire_claim and advanced next_run_at)
+                # but the successor never adopted it before recovery terminalized
+                # the execution. Re-arm the job so the scheduler refires the lost
+                # occurrence rather than silently consuming it. Non-handoff
+                # interruptions (handoff_pending=0) did run, so they must not refire.
+                if row["handoff_pending"]:
+                    requeue_job_ids.append(row["job_id"])
         if changed:
             _prune_unlocked(conn)
     for record in recovered:
         _emit_execution_state(record)
+    # Recover the lost occurrence AFTER the ledger transaction commits: the requeue
+    # touches the jobs store (jobs.json), a separate lock, and must not leave the
+    # executions ledger half-terminalized if it failed. Best-effort — on failure the
+    # occurrence is simply lost as before the fix (the ledger is still not a retry
+    # queue; this only refires an occurrence that never ran).
+    for _requeue_job_id in requeue_job_ids:
+        try:
+            from cron.jobs import requeue_lost_occurrence
+            requeue_lost_occurrence(_requeue_job_id)
+        except Exception:  # noqa: BLE001 -- best-effort recovery, ledger stays clean
+            pass
     return changed
 
 

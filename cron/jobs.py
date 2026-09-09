@@ -2535,6 +2535,32 @@ def claim_job_for_fire(
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
+def requeue_lost_occurrence(job_id: str) -> bool:
+    """Re-arm a job whose scheduled occurrence was dispatched then lost — most importantly a
+    restart-safe handoff terminalized by dead-owner recovery before its successor could adopt it
+    (#106607).
+
+    ``claim_job_for_fire`` stamps ``fire_claim`` and advances ``next_run_at`` at dispatch, so an
+    adoption that never lands would silently consume the occurrence: the next tick sees an
+    already-advanced ``next_run_at`` and the stale ``fire_claim`` blocks a reclaim within its TTL.
+    Recovery of an unadopted handoff calls this to clear the stale claim and restore
+    ``next_run_at`` to now, letting the scheduler refire the occurrence rather than lose it.
+
+    This recovers a scheduled occurrence that never ran (the handoff was never adopted); it is
+    not a retry of a run that did happen, so the ledger stays "not a retry queue." A no-op for
+    missing, terminal, or paused jobs (a paused job must not be resurrected by a stale callback).
+    Returns ``True`` only when the job was actually re-armed in the jobs store.
+    """
+    def apply(jobs, _i, job):
+        if not is_job_runnable(job):
+            return False
+        job["fire_claim"] = None
+        job["next_run_at"] = _hermes_now().isoformat()
+        save_jobs(jobs)
+        return True
+    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+
+
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
     outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
